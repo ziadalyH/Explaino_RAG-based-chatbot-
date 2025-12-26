@@ -435,6 +435,331 @@ That's it! The system will automatically:
 - Index your data files
 - Be ready to answer questions
 
+## 📥 Adding Your Own Data
+
+### Step-by-Step Guide to Upload Your Dataset
+
+This system is designed to work with **your own data**. Here's exactly how to add your video transcripts and PDF documents.
+
+#### Step 1: Prepare Video Transcript Files
+
+**Location**: Place JSON files in `data/transcripts/` directory
+
+**Required Format**:
+
+```json
+{
+  "video_id": "your_unique_video_identifier",
+  "pdf_reference": "related_document.pdf",
+  "video_transcripts": [
+    {
+      "id": 1,
+      "timestamp": 0.0,
+      "word": "First"
+    },
+    {
+      "id": 2,
+      "timestamp": 0.5,
+      "word": "word"
+    }
+  ]
+}
+```
+
+**Requirements**:
+
+- ✅ Each JSON file represents one video
+- ✅ `video_id` must be **unique** across all transcript files
+- ✅ `pdf_reference` should match a PDF filename in `data/pdfs/`
+- ✅ Token `id` must be **sequential** (1, 2, 3, ...)
+- ✅ `timestamp` must be **non-decreasing** (in seconds)
+- ✅ Each `word` is a single spoken token
+
+**File Naming**: Any `.json` filename works (e.g., `my_video_2024.json`)
+
+**Example**:
+
+```bash
+# Copy your transcript file
+cp ~/my_transcripts/database_tutorial.json data/transcripts/
+
+# Verify it's valid JSON
+python -m json.tool data/transcripts/database_tutorial.json
+```
+
+#### Step 2: Prepare PDF Documents
+
+**Location**: Place PDF files in `data/pdfs/` directory
+
+**Requirements**:
+
+- ✅ PDF must contain **extractable text** (not scanned images)
+- ✅ Filename should match `pdf_reference` in your transcript JSON files
+- ✅ Multi-page PDFs are fully supported
+- ✅ Tables and lists will be extracted as text
+
+**Not Supported**:
+
+- ❌ Scanned PDFs without OCR
+- ❌ Image-only PDFs
+- ❌ Password-protected PDFs
+
+**Example**:
+
+```bash
+# Copy your PDF
+cp ~/documents/database_guide.pdf data/pdfs/
+
+# Verify PDF has extractable text
+pdftotext data/pdfs/database_guide.pdf - | head -20
+```
+
+#### Step 3: Index Your Data
+
+**First Time Indexing**:
+
+```bash
+# Using Docker
+docker-compose exec rag-backend python main.py index
+
+# Using Local Installation
+python main.py index
+```
+
+**What Happens During Indexing**:
+
+1. 🔍 System scans `data/transcripts/` for all `.json` files
+2. 🔍 System scans `data/pdfs/` for all `.pdf` files
+3. ✅ Validates JSON schema (video_id, timestamps, etc.)
+4. 📄 Extracts text from PDFs with font information
+5. ✂️ Creates semantic chunks (512 tokens for PDFs, 30-50 words for videos)
+6. 🧠 Generates embeddings using MPNet (~20 chunks/second)
+7. 💾 Indexes in OpenSearch (separate indices for PDFs and videos)
+8. 📊 Generates knowledge summary
+
+**Expected Output**:
+
+```
+INFO - Starting index building process
+INFO - Ingesting video transcripts
+INFO - Found 3 JSON files in data/transcripts
+INFO - Ingested 3 video transcripts (3 new, 0 already indexed)
+INFO - Ingesting PDF documents
+INFO - Found 5 PDF files in data/pdfs
+INFO - Ingested 450 PDF paragraphs from 5 PDFs (5 new, 0 already indexed)
+INFO - Creating 234 transcript chunks
+INFO - Creating 450 PDF chunks
+INFO - Generating embeddings for transcript chunks...
+INFO - ✓ Generated 234 embeddings in 12.3s (19.0 embeddings/sec)
+INFO - Generating content embeddings for PDF chunks...
+INFO - ✓ Generated 450 embeddings in 23.5s (19.1 embeddings/sec)
+INFO - Bulk indexing completed
+INFO - Index building completed successfully
+INFO - Total indexed: 5 PDFs, 3 videos
+```
+
+#### Step 4: Adding More Data Later
+
+**The system has smart resume capability** - it only processes new files!
+
+```bash
+# 1. Add new files to the directories
+cp new_video.json data/transcripts/
+cp new_document.pdf data/pdfs/
+
+# 2. Run indexing again (only processes new files)
+docker-compose exec rag-backend python main.py index
+
+# The system automatically:
+# ✅ Detects which files are already indexed
+# ✅ Only processes new/modified files
+# ✅ Preserves existing index data
+# ✅ No need to rebuild from scratch
+```
+
+**Force Rebuild** (when needed):
+
+```bash
+# Rebuild entire index from scratch
+python main.py index --rebuild
+
+# Use this when:
+# - You've modified existing files
+# - You want to change chunking parameters
+# - Index appears corrupted
+```
+
+#### Step 5: Verify Your Data is Indexed
+
+**Check via OpenSearch**:
+
+```bash
+# Check PDF index
+curl http://localhost:9200/rag-pdf-index/_count
+
+# Check video index
+curl http://localhost:9200/rag-video-index/_count
+
+# View indexed files
+curl http://localhost:9200/rag-pdf-index/_search?size=0 \
+  -H "Content-Type: application/json" \
+  -d '{"aggs": {"files": {"terms": {"field": "pdf_filename"}}}}'
+```
+
+**Check via API**:
+
+```bash
+curl http://localhost:8000/index/status
+```
+
+**Expected Response**:
+
+```json
+{
+  "index_exists": true,
+  "statistics": {
+    "total_pdfs": 5,
+    "total_videos": 3,
+    "pdf_files": ["doc1.pdf", "doc2.pdf", ...],
+    "video_ids": ["video1", "video2", ...]
+  }
+}
+```
+
+#### Step 6: Query Your Data
+
+```bash
+# CLI Query
+python main.py query --question "What is database normalization?"
+
+# API Query
+curl -X POST http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What is database normalization?"}'
+```
+
+### File Discovery Rules
+
+**Automatic Discovery**:
+
+- ✅ All `.json` files in `data/transcripts/` are discovered
+- ✅ All `.pdf` files in `data/pdfs/` are discovered
+- ✅ Files in subdirectories are **NOT** scanned (flat structure only)
+- ✅ Hidden files (starting with `.`) are ignored
+- ✅ No specific naming convention required
+
+**Naming Best Practices**:
+
+- ✅ Use descriptive names: `database_tutorial_2024.json` not `vid1.json`
+- ✅ Match PDF names to `pdf_reference`: If JSON has `"pdf_reference": "guide.pdf"`, name your PDF `guide.pdf`
+- ✅ Avoid special characters: Use `_` instead of spaces
+- ✅ Use lowercase for consistency
+
+**Directory Structure**:
+
+```
+Explaino_RAG_AIFounding/
+├── data/
+│   ├── transcripts/
+│   │   ├── video1.json          ✅ Discovered
+│   │   ├── video2.json          ✅ Discovered
+│   │   └── subfolder/
+│   │       └── video3.json      ❌ NOT discovered (subdirectory)
+│   │
+│   └── pdfs/
+│       ├── document1.pdf        ✅ Discovered
+│       ├── document2.pdf        ✅ Discovered
+│       └── .hidden.pdf          ❌ NOT discovered (hidden file)
+```
+
+### Troubleshooting Data Upload
+
+**Problem: JSON file not discovered**
+
+```bash
+# Check file is in correct location
+ls -la data/transcripts/
+
+# Verify JSON is valid
+python -m json.tool data/transcripts/your_file.json
+
+# Check logs for errors
+docker-compose logs rag-backend | grep "transcript"
+```
+
+**Problem: PDF not parsed**
+
+```bash
+# Verify PDF has extractable text (not scanned image)
+pdftotext data/pdfs/your_file.pdf - | head
+
+# Check file permissions
+ls -la data/pdfs/your_file.pdf
+
+# Check logs for PDF parsing errors
+docker-compose logs rag-backend | grep "PDF"
+```
+
+**Problem: Indexing fails**
+
+```bash
+# Check OpenSearch is running
+curl http://localhost:9200/_cluster/health
+
+# Check disk space
+df -h
+
+# View detailed error logs
+docker-compose logs rag-backend | grep "ERROR"
+
+# Try rebuilding index
+python main.py index --rebuild
+```
+
+**Problem: Query returns no results**
+
+```bash
+# Verify data is indexed
+curl http://localhost:9200/rag-pdf-index/_count
+curl http://localhost:9200/rag-video-index/_count
+
+# Check relevance threshold (lower = more results)
+# Edit .env: RELEVANCE_THRESHOLD=0.3  (default is 0.5)
+
+# Try a simpler query
+python main.py query --question "database"
+```
+
+### Data Update Workflow
+
+**Recommended workflow for updating your dataset**:
+
+```bash
+# 1. Add new files
+cp new_files/*.json data/transcripts/
+cp new_files/*.pdf data/pdfs/
+
+# 2. Index new files (resume mode - fast)
+python main.py index
+
+# 3. Verify new files are indexed
+curl http://localhost:8000/index/status
+
+# 4. Test with a query
+python main.py query --question "test question"
+
+# 5. If you modified existing files, rebuild
+python main.py index --rebuild
+```
+
+**Performance Tips**:
+
+- 📊 Indexing speed: ~20 chunks/second on CPU
+- 📊 For 100 pages of PDFs: ~2-3 minutes
+- 📊 For 10 video transcripts: ~1-2 minutes
+- 💡 First run downloads MPNet model (~420MB, one-time)
+- 💡 Subsequent runs are faster (model cached)
+
 ## 💻 Installation
 
 ### Prerequisites
