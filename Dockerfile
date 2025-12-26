@@ -40,7 +40,7 @@ COPY entrypoint.sh .
 RUN chmod +x entrypoint.sh
 
 # Create data directories
-RUN mkdir -p data/transcripts data/pdfs mock_data/transcripts mock_data/pdfs
+RUN mkdir -p data/transcripts data/pdfs
 
 # Set entrypoint
 ENTRYPOINT ["./entrypoint.sh"]
