@@ -30,7 +30,17 @@ For command-line interactions and scripting:
 # Start CLI mode
 docker-compose --profile cli up -d
 
-# Query the system
+# ⏳ IMPORTANT: Wait for indexing to complete before querying!
+# Check the logs to see indexing progress:
+docker-compose logs -f rag-backend-cli
+
+# Look for these messages in the logs:
+# - "✓ Generated X embeddings" (embedding generation)
+# - "✓ Index 'rag-pdf-index' refreshed and ready for search"
+# - "✓ Index 'rag-video-index' refreshed and ready for search"
+# - "Index building completed successfully"
+
+# Once indexing is complete (usually 2-3 minutes), query the system:
 docker-compose exec rag-backend-cli python main.py query -q "What is a database?"
 
 # Index management
@@ -45,7 +55,17 @@ For REST API access (ideal for frontend integration):
 # Start API mode
 docker-compose --profile api up -d
 
-# API available at http://localhost:8000
+# ⏳ IMPORTANT: Wait for indexing to complete before querying!
+# Check the logs to see indexing progress:
+docker-compose logs -f rag-backend-api
+
+# Look for these messages in the logs:
+# - "✓ Generated X embeddings" (embedding generation)
+# - "✓ Index 'rag-pdf-index' refreshed and ready for search"
+# - "✓ Index 'rag-video-index' refreshed and ready for search"
+# - "Index building completed successfully"
+
+# Once indexing is complete (usually 2-3 minutes), the API is ready at http://localhost:8000
 curl -X POST http://localhost:8000/query \
   -H "Content-Type: application/json" \
   -d '{"question": "What is a database?"}'
@@ -57,6 +77,15 @@ curl -X POST http://localhost:8000/query \
 # Start both CLI and API
 docker-compose --profile cli --profile api up -d
 
+# ⏳ IMPORTANT: Wait for indexing to complete before querying!
+# Monitor both services:
+docker-compose logs -f rag-backend-cli rag-backend-api
+
+# Or check specific service:
+docker-compose logs -f rag-backend-cli
+
+# Once you see "Index building completed successfully" in the logs:
+
 # Use CLI
 docker-compose exec rag-backend-cli python main.py query -q "test"
 
@@ -64,6 +93,16 @@ docker-compose exec rag-backend-cli python main.py query -q "test"
 curl -X POST http://localhost:8000/query \
   -H "Content-Type: application/json" \
   -d '{"question": "test"}'
+```
+
+**💡 Pro Tip:** To check if indexing is complete without watching logs:
+
+```bash
+# Check index status via CLI
+docker-compose exec rag-backend-cli python main.py status
+
+# Or via API
+curl http://localhost:8000/index/status
 ```
 
 The system will:
@@ -371,6 +410,35 @@ python main.py query --question "What is a database?"
 
 ## 🐛 Troubleshooting
 
+### Indexing Not Complete / "No answer found" Errors
+
+If you get "No answer found" responses immediately after starting:
+
+```bash
+# 1. Check if indexing is still in progress
+docker-compose logs rag-backend-cli | tail -50
+# or for API mode:
+docker-compose logs rag-backend-api | tail -50
+
+# 2. Look for completion messages:
+# ✓ "Index building completed successfully"
+# ✓ "rag-pdf-index refreshed and ready for search"
+# ✓ "rag-video-index refreshed and ready for search"
+
+# 3. Check index status
+docker-compose exec rag-backend-cli python main.py status
+
+# 4. Verify indices have documents
+curl http://localhost:9200/rag-pdf-index/_count
+curl http://localhost:9200/rag-video-index/_count
+
+# Expected output: {"count": <number>, ...}
+# If count is 0, indexing hasn't completed yet
+
+# 5. Wait for indexing to complete (usually 2-3 minutes on first run)
+# Then try your query again
+```
+
 ### Docker Build Fails
 
 ```bash
@@ -380,7 +448,7 @@ docker-compose build --no-cache
 docker-compose up
 ```
 
-### No Results Found
+### No Results Found (After Indexing Complete)
 
 ```bash
 # Check indices exist and have data
@@ -391,7 +459,7 @@ curl http://localhost:9200/rag-video-index/_count
 RELEVANCE_THRESHOLD=0.3
 
 # Rebuild index
-docker-compose exec rag-backend python main.py index --rebuild
+docker-compose exec rag-backend-cli python main.py index --rebuild
 ```
 
 ### OpenSearch Connection Issues
