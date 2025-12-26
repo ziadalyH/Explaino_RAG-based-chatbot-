@@ -1,31 +1,26 @@
-# Core dependencies
-opensearch-py==2.4.2
-openai==0.28.1
-PyPDF2==3.0.1
-pydantic==2.6.1
-pyyaml==6.0.1
-numpy<2.0.0
-sentence-transformers
-torch
-pillow==10.2.0
-pi-heif==0.16.0
-pillow-heif==0.15.0
-matplotlib
-tiktoken==0.5.2
+# Core RAG Dependencies
+opensearch-py==2.4.2          # Vector database client
+openai==0.28.1                # LLM and embeddings API
+numpy<2.0.0                   # Numerical operations
 
-# PyMuPDF for PDF processing
-PyMuPDF==1.23.26
+# PDF Processing
+PyMuPDF==1.23.26              # PDF text extraction with font info
+tiktoken==0.5.2               # Token counting for chunking
 
-# NLTK for stop words
-nltk==3.8.1
+# Embeddings
+sentence-transformers         # Local embedding models (MPNet)
+torch                         # Required by sentence-transformers
 
-# Testing dependencies
-pytest==8.0.0
-hypothesis==6.98.3
+# NLP
+nltk==3.8.1                   # Stop words for preprocessing
 
-# Additional utilities
-python-dotenv==1.0.1
+# Configuration
+pyyaml==6.0.1                 # YAML config file parsing
+python-dotenv==1.0.1          # Environment variable management
 
-# Flask API
-flask==3.0.0
-flask-cors==4.0.0
+# API (Optional - only if using Flask API)
+flask==3.0.0                  # REST API framework
+flask-cors==4.0.0             # CORS support for API
+
+# Testing (Development only)
+pytest==8.0.0                 # Testing framework
