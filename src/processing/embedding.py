@@ -2,11 +2,20 @@
 
 import logging
 import time
+import string
 from typing import List, Optional
 import numpy as np
 import openai
+import nltk
+from nltk.corpus import stopwords
 
 from ..config import Config
+
+# Download stopwords on first import (will be cached)
+try:
+    nltk.data.find('corpora/stopwords')
+except LookupError:
+    nltk.download('stopwords', quiet=True)
 
 
 class EmbeddingEngine:
@@ -25,6 +34,9 @@ class EmbeddingEngine:
         self.embedding_dimension = config.embedding_dimension
         self.embedding_provider = config.embedding_provider
         self._embedding_cache = {}  # Cache to reduce API costs
+        
+        # Load English stop words for preprocessing before embedding
+        self.stop_words = set(stopwords.words('english'))
         
         if self.embedding_provider == "openai":
             self._initialize_openai_client()
@@ -72,11 +84,45 @@ class EmbeddingEngine:
         except Exception as e:
             raise RuntimeError(f"Failed to load local model: {str(e)}")
     
+    def preprocess_for_embedding(self, text: str) -> str:
+        """
+        Preprocess text before embedding by removing stop words and punctuation.
+        
+        This focuses the embedding on important keywords while preserving
+        the full text for LLM context.
+        
+        Args:
+            text: Raw text
+            
+        Returns:
+            Preprocessed text with stop words and punctuation removed
+        """
+        # Strip whitespace
+        text = text.strip()
+        
+        # Remove punctuation
+        text = text.translate(str.maketrans('', '', string.punctuation))
+        
+        # Tokenize and remove stop words
+        words = text.split()
+        filtered_words = [word for word in words if word.lower() not in self.stop_words]
+        
+        # Join back together
+        text = ' '.join(filtered_words)
+        
+        # Normalize whitespace
+        text = ' '.join(text.split())
+        
+        return text
+    
     def embed_text(self, text: str) -> np.ndarray:
         """Generate embedding for a single text.
         
+        The text is preprocessed (stop words removed) before embedding,
+        but the original text is preserved in the index for LLM context.
+        
         Args:
-            text: Text to embed
+            text: Text to embed (will be preprocessed automatically)
             
         Returns:
             Numpy array containing the embedding vector
@@ -88,17 +134,25 @@ class EmbeddingEngine:
         if not text or not text.strip():
             raise ValueError("Cannot embed empty text")
         
-        # Check cache first
-        cache_key = text.strip()
+        # Preprocess text for embedding (remove stop words and punctuation)
+        preprocessed_text = self.preprocess_for_embedding(text)
+        
+        # If preprocessing removed everything, use original text
+        if not preprocessed_text:
+            self.logger.warning(f"Preprocessing removed all content, using original: '{text[:50]}'")
+            preprocessed_text = text.strip()
+        
+        # Check cache first (using preprocessed text as key)
+        cache_key = preprocessed_text
         if cache_key in self._embedding_cache:
-            self.logger.debug(f"Using cached embedding for text: {text[:50]}...")
+            self.logger.debug(f"Using cached embedding for text: {preprocessed_text[:50]}...")
             return self._embedding_cache[cache_key]
         
-        # Generate embedding based on provider
+        # Generate embedding based on provider (using preprocessed text)
         if self.embedding_provider == "openai":
-            embedding = self._embed_text_openai(text)
+            embedding = self._embed_text_openai(preprocessed_text)
         elif self.embedding_provider == "local":
-            embedding = self._embed_text_local(text)
+            embedding = self._embed_text_local(preprocessed_text)
         else:
             raise ValueError(f"Unknown embedding provider: {self.embedding_provider}")
         
@@ -211,12 +265,16 @@ class EmbeddingEngine:
         if not texts:
             raise ValueError("Cannot embed empty list of texts")
         
-        # Filter out empty texts and track indices
+        # Preprocess and filter out empty texts
         valid_texts = []
         valid_indices = []
         for i, text in enumerate(texts):
             if text and text.strip():
-                valid_texts.append(text.strip())
+                preprocessed = self.preprocess_for_embedding(text)
+                if not preprocessed:
+                    self.logger.warning(f"Preprocessing removed all content at index {i}, using original")
+                    preprocessed = text.strip()
+                valid_texts.append(preprocessed)
                 valid_indices.append(i)
             else:
                 self.logger.warning(f"Skipping empty text at index {i}")

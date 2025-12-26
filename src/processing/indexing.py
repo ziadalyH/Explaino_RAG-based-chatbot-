@@ -32,7 +32,8 @@ class VectorIndexBuilder:
         """
         self.config = config
         self.logger = logger
-        self.index_name = config.opensearch_index_name
+        self.pdf_index_name = config.opensearch_pdf_index
+        self.video_index_name = config.opensearch_video_index
         self.embedding_dimension = config.embedding_dimension
         self.opensearch_client = self._initialize_opensearch_client()
     
@@ -89,7 +90,7 @@ class VectorIndexBuilder:
             self.logger.error(f"Unexpected error initializing OpenSearch client: {str(e)}")
             raise
     
-    def create_index_if_not_exists(self) -> None:
+    def create_index_if_not_exists(self, index_name: str, index_type: str = "general") -> None:
         """
         Create OpenSearch index with k-NN configuration if it doesn't exist.
         
@@ -99,16 +100,20 @@ class VectorIndexBuilder:
         - Cosine similarity space type
         - Proper field mappings for metadata
         
+        Args:
+            index_name: Name of the index to create
+            index_type: Type of index ("pdf" or "video") for specific mappings
+        
         Raises:
             RequestError: If index creation fails
         """
-        if self.opensearch_client.indices.exists(index=self.index_name):
-            self.logger.info(f"Index '{self.index_name}' already exists")
+        if self.opensearch_client.indices.exists(index=index_name):
+            self.logger.info(f"Index '{index_name}' already exists")
             return
         
-        self.logger.info(f"Creating index '{self.index_name}' with k-NN configuration")
+        self.logger.info(f"Creating index '{index_name}' with k-NN configuration")
         
-        # Define index settings and mappings
+        # Base index settings
         index_body = {
             "settings": {
                 "index": {
@@ -134,37 +139,54 @@ class VectorIndexBuilder:
                             }
                         }
                     },
-                    # Source type for filtering (video or pdf)
-                    "source_type": {"type": "keyword"},
-                    
-                    # Video transcript metadata
-                    "video_id": {"type": "keyword"},
-                    "start_timestamp": {"type": "float"},
-                    "end_timestamp": {"type": "float"},
-                    "start_token_id": {"type": "integer"},
-                    "end_token_id": {"type": "integer"},
-                    "transcript_snippet": {"type": "text"},
-                    
-                    # PDF document metadata
-                    "pdf_filename": {"type": "keyword"},
-                    "page_number": {"type": "integer"},
-                    "paragraph_index": {"type": "integer"},
-                    "title": {"type": "text"},  # Section title/heading
-                    
                     # Common text field
                     "text": {"type": "text"}
                 }
             }
         }
         
+        # Add type-specific mappings
+        if index_type == "pdf":
+            index_body["mappings"]["properties"].update({
+                # Title embedding (separate for better title matching)
+                "title_embedding": {
+                    "type": "knn_vector",
+                    "dimension": self.embedding_dimension,
+                    "method": {
+                        "name": "hnsw",
+                        "space_type": "cosinesimil",
+                        "engine": "lucene",
+                        "parameters": {
+                            "ef_construction": 128,
+                            "m": 16
+                        }
+                    }
+                },
+                # PDF document metadata
+                "pdf_filename": {"type": "keyword"},
+                "page_number": {"type": "integer"},
+                "paragraph_index": {"type": "integer"},
+                "title": {"type": "text"}
+            })
+        elif index_type == "video":
+            index_body["mappings"]["properties"].update({
+                # Video transcript metadata
+                "video_id": {"type": "keyword"},
+                "start_timestamp": {"type": "float"},
+                "end_timestamp": {"type": "float"},
+                "start_token_id": {"type": "integer"},
+                "end_token_id": {"type": "integer"},
+                "transcript_snippet": {"type": "text"}
+            })
+        
         try:
             response = self.opensearch_client.indices.create(
-                index=self.index_name,
+                index=index_name,
                 body=index_body
             )
             
             self.logger.info(
-                f"Successfully created index '{self.index_name}' with k-NN enabled"
+                f"Successfully created index '{index_name}' with k-NN enabled"
             )
             self.logger.debug(f"Index creation response: {response}")
             
@@ -182,10 +204,10 @@ class VectorIndexBuilder:
         embedding_engine: EmbeddingEngine
     ) -> None:
         """
-        Build vector index in OpenSearch from all chunks.
+        Build vector indices in OpenSearch from all chunks.
         
         This method:
-        1. Creates the index if it doesn't exist
+        1. Creates separate indices for PDFs and videos if they don't exist
         2. Generates embeddings for all chunks
         3. Bulk indexes documents with embeddings and metadata
         
@@ -198,32 +220,47 @@ class VectorIndexBuilder:
             Exception: If indexing fails
         """
         self.logger.info(
-            f"Building index with {len(transcript_chunks)} transcript chunks "
+            f"Building indices with {len(transcript_chunks)} transcript chunks "
             f"and {len(pdf_chunks)} PDF chunks"
         )
         
-        # Create index if needed
-        self.create_index_if_not_exists()
-        
-        # Prepare documents for indexing
-        documents = []
+        # Create indices if needed
+        if transcript_chunks:
+            self.create_index_if_not_exists(self.video_index_name, "video")
+        if pdf_chunks:
+            self.create_index_if_not_exists(self.pdf_index_name, "pdf")
         
         # Process transcript chunks
         if transcript_chunks:
+            self.logger.info("="*80)
             self.logger.info(f"Processing {len(transcript_chunks)} transcript chunks")
+            self.logger.info("="*80)
             
             # Extract texts for batch embedding
             transcript_texts = [chunk.text for chunk in transcript_chunks]
             
             try:
-                # Generate embeddings in batch
+                # Generate embeddings in batch with progress tracking
+                self.logger.info("Generating embeddings for transcript chunks...")
+                import time
+                start_time = time.time()
+                
                 transcript_embeddings = embedding_engine.embed_batch(transcript_texts)
                 
+                elapsed = time.time() - start_time
+                embeddings_per_sec = len(transcript_texts) / elapsed if elapsed > 0 else 0
+                
+                self.logger.info(
+                    f"✓ Generated {len(transcript_embeddings)} embeddings in {elapsed:.2f}s "
+                    f"({embeddings_per_sec:.1f} embeddings/sec)"
+                )
+                
                 # Create documents with embeddings and metadata
+                self.logger.info("Creating video documents...")
+                video_documents = []
                 for chunk, embedding in zip(transcript_chunks, transcript_embeddings):
                     doc = {
                         "embedding": embedding.tolist(),
-                        "source_type": "video",
                         "video_id": chunk.video_id,
                         "start_timestamp": chunk.start_timestamp,
                         "end_timestamp": chunk.end_timestamp,
@@ -232,70 +269,117 @@ class VectorIndexBuilder:
                         "transcript_snippet": chunk.text,
                         "text": chunk.text
                     }
-                    documents.append(doc)
+                    video_documents.append(doc)
                 
-                self.logger.info(
-                    f"Successfully created {len(documents)} video documents with embeddings"
-                )
+                self.logger.info(f"✓ Created {len(video_documents)} video documents")
+                
+                # Index video documents
+                self.index_documents(video_documents, self.video_index_name)
                 
             except Exception as e:
                 self.logger.error(f"Failed to process transcript chunks: {str(e)}")
                 raise
         
-        # Process PDF chunks
+        # Process PDF chunks with dual embeddings
         if pdf_chunks:
-            self.logger.info(f"Processing {len(pdf_chunks)} PDF chunks")
+            self.logger.info("="*80)
+            self.logger.info(f"Processing {len(pdf_chunks)} PDF chunks with dual embeddings")
+            self.logger.info("="*80)
+            
+            # Separate chunks with and without titles
+            chunks_with_titles = [chunk for chunk in pdf_chunks if chunk.title]
+            chunks_without_titles = [chunk for chunk in pdf_chunks if not chunk.title]
+            
+            self.logger.info(f"  - {len(chunks_with_titles)} chunks with titles (dual embeddings)")
+            self.logger.info(f"  - {len(chunks_without_titles)} chunks without titles (content only)")
             
             # Extract texts for batch embedding
-            # Combine title and text for better semantic search
-            pdf_texts = []
-            for chunk in pdf_chunks:
-                if chunk.title:
-                    # Embed both title and content together
-                    combined_text = f"{chunk.title}\n\n{chunk.text}"
-                else:
-                    combined_text = chunk.text
-                pdf_texts.append(combined_text)
+            pdf_texts = [chunk.text for chunk in pdf_chunks]
             
             try:
-                # Generate embeddings in batch
+                import time
+                
+                # Generate content embeddings for all chunks
+                self.logger.info("Generating content embeddings for all PDF chunks...")
+                start_time = time.time()
+                
                 pdf_embeddings = embedding_engine.embed_batch(pdf_texts)
                 
+                elapsed = time.time() - start_time
+                embeddings_per_sec = len(pdf_texts) / elapsed if elapsed > 0 else 0
+                
+                self.logger.info(
+                    f"✓ Generated {len(pdf_embeddings)} content embeddings in {elapsed:.2f}s "
+                    f"({embeddings_per_sec:.1f} embeddings/sec)"
+                )
+                
+                # Generate title embeddings only for chunks with titles
+                title_embeddings_map = {}
+                if chunks_with_titles:
+                    self.logger.info(f"Generating title embeddings for {len(chunks_with_titles)} chunks...")
+                    start_time = time.time()
+                    
+                    pdf_titles = [chunk.title for chunk in chunks_with_titles]
+                    title_embeddings = embedding_engine.embed_batch(pdf_titles)
+                    
+                    elapsed = time.time() - start_time
+                    embeddings_per_sec = len(pdf_titles) / elapsed if elapsed > 0 else 0
+                    
+                    self.logger.info(
+                        f"✓ Generated {len(title_embeddings)} title embeddings in {elapsed:.2f}s "
+                        f"({embeddings_per_sec:.1f} embeddings/sec)"
+                    )
+                    
+                    # Create a map of chunk to title embedding
+                    for chunk, title_emb in zip(chunks_with_titles, title_embeddings):
+                        # Use a unique key (filename + page + index)
+                        key = f"{chunk.pdf_filename}_{chunk.page_number}_{chunk.paragraph_index}"
+                        title_embeddings_map[key] = title_emb
+                
                 # Create documents with embeddings and metadata
-                for chunk, embedding in zip(pdf_chunks, pdf_embeddings):
+                self.logger.info("Creating PDF documents...")
+                pdf_documents = []
+                for chunk, content_emb in zip(pdf_chunks, pdf_embeddings):
+                    # Check if this chunk has a title embedding
+                    key = f"{chunk.pdf_filename}_{chunk.page_number}_{chunk.paragraph_index}"
+                    
                     doc = {
-                        "embedding": embedding.tolist(),
-                        "source_type": "pdf",
+                        "embedding": content_emb.tolist(),  # Content embedding (always present)
                         "pdf_filename": chunk.pdf_filename,
                         "page_number": chunk.page_number,
                         "paragraph_index": chunk.paragraph_index,
                         "text": chunk.text,
-                        "title": chunk.title  # Store title separately
+                        "title": chunk.title  # Store title separately (can be None)
                     }
-                    documents.append(doc)
+                    
+                    # Only add title_embedding if chunk has a title
+                    if key in title_embeddings_map:
+                        doc["title_embedding"] = title_embeddings_map[key].tolist()
+                    
+                    pdf_documents.append(doc)
                 
                 self.logger.info(
-                    f"Successfully created {len(pdf_chunks)} PDF documents with embeddings"
+                    f"✓ Created {len(pdf_chunks)} PDF documents "
+                    f"({len(chunks_with_titles)} with dual embeddings)"
                 )
+                
+                # Index PDF documents
+                self.index_documents(pdf_documents, self.pdf_index_name)
                 
             except Exception as e:
                 self.logger.error(f"Failed to process PDF chunks: {str(e)}")
                 raise
-        
-        # Index all documents
-        if documents:
-            self.index_documents(documents)
-        else:
-            self.logger.warning("No documents to index")
     
-    def index_documents(self, documents: List[Dict[str, Any]]) -> None:
+    def index_documents(self, documents: List[Dict[str, Any]], index_name: str) -> None:
         """
-        Bulk index documents into OpenSearch.
+        Bulk index documents into OpenSearch with detailed progress tracking.
         
-        Uses the bulk API for efficient indexing with proper error handling.
+        Uses the bulk API for efficient indexing with proper error handling
+        and progress logging.
         
         Args:
             documents: List of document dictionaries with embeddings and metadata
+            index_name: Name of the index to insert documents into
             
         Raises:
             Exception: If bulk indexing fails
@@ -304,50 +388,103 @@ class VectorIndexBuilder:
             self.logger.warning("No documents provided for indexing")
             return
         
-        self.logger.info(f"Bulk indexing {len(documents)} documents into '{self.index_name}'")
+        total_docs = len(documents)
+        self.logger.info(f"Starting bulk indexing of {total_docs} documents into '{index_name}'")
         
         # Prepare bulk actions
         actions = []
         for doc in documents:
             action = {
-                "_index": self.index_name,
+                "_index": index_name,
                 "_source": doc
             }
             actions.append(action)
         
         try:
-            # Execute bulk indexing
-            success_count, errors = helpers.bulk(
-                self.opensearch_client,
-                actions,
-                chunk_size=500,
-                request_timeout=60,
-                raise_on_error=False,
-                raise_on_exception=False
-            )
+            # Track progress
+            import time
+            start_time = time.time()
             
+            # Execute bulk indexing with progress tracking
+            success_count = 0
+            error_count = 0
+            errors = []
+            
+            # Use smaller chunk size for better progress tracking
+            chunk_size = 100
+            total_chunks = (total_docs + chunk_size - 1) // chunk_size
+            
+            self.logger.info(f"Indexing in {total_chunks} batches of {chunk_size} documents")
+            
+            for chunk_num in range(total_chunks):
+                start_idx = chunk_num * chunk_size
+                end_idx = min(start_idx + chunk_size, total_docs)
+                chunk_actions = actions[start_idx:end_idx]
+                
+                chunk_start_time = time.time()
+                
+                # Index this chunk
+                chunk_success, chunk_errors = helpers.bulk(
+                    self.opensearch_client,
+                    chunk_actions,
+                    chunk_size=chunk_size,
+                    request_timeout=60,
+                    raise_on_error=False,
+                    raise_on_exception=False
+                )
+                
+                chunk_elapsed = time.time() - chunk_start_time
+                
+                success_count += chunk_success
+                if chunk_errors:
+                    error_count += len(chunk_errors)
+                    errors.extend(chunk_errors)
+                
+                # Calculate progress
+                progress_pct = ((chunk_num + 1) / total_chunks) * 100
+                docs_per_sec = chunk_success / chunk_elapsed if chunk_elapsed > 0 else 0
+                
+                # Log progress
+                self.logger.info(
+                    f"Batch {chunk_num + 1}/{total_chunks} ({progress_pct:.1f}%): "
+                    f"Indexed {chunk_success} docs in {chunk_elapsed:.2f}s "
+                    f"({docs_per_sec:.1f} docs/sec) - "
+                    f"Total: {success_count}/{total_docs}"
+                )
+            
+            # Calculate total time
+            total_elapsed = time.time() - start_time
+            avg_docs_per_sec = success_count / total_elapsed if total_elapsed > 0 else 0
+            
+            # Log errors if any
             if errors:
-                self.logger.error(f"Bulk indexing encountered {len(errors)} errors")
+                self.logger.error(f"Bulk indexing encountered {error_count} errors")
                 # Log first few errors for debugging
                 for i, error in enumerate(errors[:5]):
                     self.logger.error(f"Error {i+1}: {error}")
                 
                 # Raise exception if too many errors
-                error_rate = len(errors) / len(documents)
+                error_rate = error_count / total_docs
                 if error_rate > 0.1:  # More than 10% errors
                     raise Exception(
-                        f"Bulk indexing failed with {len(errors)} errors "
+                        f"Bulk indexing failed with {error_count} errors "
                         f"({error_rate:.1%} error rate)"
                     )
             
-            self.logger.info(
-                f"Successfully indexed {success_count} documents "
-                f"({len(errors)} errors)"
-            )
+            # Final summary
+            self.logger.info("="*80)
+            self.logger.info(f"Bulk indexing completed for '{index_name}'")
+            self.logger.info(f"  Total documents: {total_docs}")
+            self.logger.info(f"  Successfully indexed: {success_count}")
+            self.logger.info(f"  Errors: {error_count}")
+            self.logger.info(f"  Total time: {total_elapsed:.2f}s")
+            self.logger.info(f"  Average speed: {avg_docs_per_sec:.1f} docs/sec")
+            self.logger.info("="*80)
             
             # Refresh index to make documents searchable immediately
-            self.opensearch_client.indices.refresh(index=self.index_name)
-            self.logger.info(f"Refreshed index '{self.index_name}'")
+            self.logger.info(f"Refreshing index '{index_name}'...")
+            self.opensearch_client.indices.refresh(index=index_name)
+            self.logger.info(f"✓ Index '{index_name}' refreshed and ready for search")
             
         except Exception as e:
             self.logger.error(f"Bulk indexing failed: {str(e)}")

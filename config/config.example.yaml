@@ -17,21 +17,24 @@ opensearch:
 # OpenAI configuration
 openai:
   api_key: null  # Must be set via OPENAI_API_KEY environment variable
-  embedding_model: "text-embedding-3-small"
-  embedding_dimension: 1536
+  embedding_provider: "local"  # "local" or "openai"
+  embedding_model: "sentence-transformers/all-mpnet-base-v2"
+  embedding_dimension: 768
   llm_model: "gpt-4o-mini"
   llm_temperature: 0.3
   llm_max_tokens: 500
 
 # Retrieval configuration
 retrieval:
-  relevance_threshold: 0.5
+  relevance_threshold: .7
   max_results: 5
 
 # Chunking configuration
 chunking:
-  chunk_size: 100
-  chunk_overlap: 20
+  chunk_size: 100  # Tokens per chunk
+  chunk_overlap: 20  # Overlap between chunks
+  strategy: "sliding_window"  # Use sliding_window strategy
+  max_window: 30  # Not used in sliding_window, but kept for compatibility
 
 # Logging configuration
 logging:

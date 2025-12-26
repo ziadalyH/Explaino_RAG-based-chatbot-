@@ -4,11 +4,20 @@ openai==0.28.1
 PyPDF2==3.0.1
 pydantic==2.6.1
 pyyaml==6.0.1
-numpy==1.26.4
+numpy<2.0.0
 sentence-transformers
 torch
 pillow==10.2.0
+pi-heif==0.16.0
 pillow-heif==0.15.0
+matplotlib
+tiktoken==0.5.2
+
+# PyMuPDF for PDF processing
+PyMuPDF==1.23.26
+
+# NLTK for stop words
+nltk==3.8.1
 
 # Testing dependencies
 pytest==8.0.0
@@ -16,3 +25,7 @@ hypothesis==6.98.3
 
 # Additional utilities
 python-dotenv==1.0.1
+
+# Flask API
+flask==3.0.0
+flask-cors==4.0.0

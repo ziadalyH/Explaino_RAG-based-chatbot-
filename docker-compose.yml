@@ -24,6 +24,7 @@ services:
       - 9600:9600 # required for Performance Analyzer
     networks:
       - opensearch-net
+
   opensearch-dashboards:
     image: opensearchproject/opensearch-dashboards:latest
     container_name: opensearch-dashboards
@@ -34,42 +35,10 @@ services:
     environment:
       OPENSEARCH_HOSTS: '["http://opensearch-node1:9200"]'
       DISABLE_SECURITY_DASHBOARDS_PLUGIN: "true"
-    networks:
-      - opensearch-net
-
-  rag-backend:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: rag-backend
-    environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENSEARCH_HOST=opensearch-node1
-      - OPENSEARCH_PORT=9200
-      - OPENSEARCH_USE_SSL=false
-      - OPENSEARCH_VERIFY_CERTS=false
-      - AUTO_INDEX_ON_STARTUP=true
-      - LOG_LEVEL=INFO
-      - TRANSCRIPT_DIR=data/transcripts
-      - PDF_DIR=data/pdfs
-      - CHUNKING_STRATEGY=all_combinations
-      - MAX_CHUNK_WINDOW=30
-      - MIN_PDF_PARAGRAPHS_PER_PAGE=4
-      - EMBEDDING_PROVIDER=local
-      - EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
-      - EMBEDDING_DIMENSION=384
-      - RELEVANCE_THRESHOLD=0.65
-      - MAX_RESULTS=30
-    volumes:
-      - ./data/transcripts:/app/data/transcripts
-      - ./data/pdfs:/app/data/pdfs
-      - ./mock_data:/app/mock_data
-      - ./config:/app/config
     depends_on:
       - opensearch-node1
     networks:
       - opensearch-net
-    command: ["serve"]
 
 volumes:
   opensearch-data1:

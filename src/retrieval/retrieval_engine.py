@@ -35,7 +35,8 @@ class RetrievalEngine:
             logger: Logger instance for logging operations
         """
         self.opensearch_client = opensearch_client
-        self.index_name = config.opensearch_index_name
+        self.pdf_index_name = config.opensearch_pdf_index
+        self.video_index_name = config.opensearch_video_index
         self.relevance_threshold = config.relevance_threshold
         self.max_results = config.max_results
         self.logger = logger
@@ -152,12 +153,26 @@ class RetrievalEngine:
                 )
                 video_results.append(video_result)
             
-            self.logger.debug(f"Found {len(video_results)} video results")
+            self.logger.info(f"Found {len(video_results)} video results")
+            
+            # Print all results before filtering
+            if video_results:
+                self.logger.info("="*80)
+                self.logger.info("VIDEO SEARCH RESULTS (before threshold filtering):")
+                self.logger.info("="*80)
+                for i, result in enumerate(video_results, 1):
+                    self.logger.info(f"\nResult {i}:")
+                    self.logger.info(f"  Video ID: {result.video_id}")
+                    self.logger.info(f"  Score: {result.score:.4f}")
+                    self.logger.info(f"  Timestamp: {result.start_timestamp:.2f}s - {result.end_timestamp:.2f}s")
+                    self.logger.info(f"  Tokens: {result.start_token_id} - {result.end_token_id}")
+                    self.logger.info(f"  Snippet: {result.transcript_snippet[:200]}...")
+                self.logger.info("="*80)
             
             # Filter by threshold
             filtered_results = self.filter_by_threshold(video_results, self.relevance_threshold)
-            self.logger.debug(
-                f"After threshold filtering: {len(filtered_results)} video results"
+            self.logger.info(
+                f"After threshold filtering ({self.relevance_threshold}): {len(filtered_results)} video results"
             )
             
             return filtered_results
@@ -206,12 +221,26 @@ class RetrievalEngine:
                 )
                 pdf_results.append(pdf_result)
             
-            self.logger.debug(f"Found {len(pdf_results)} PDF results")
+            self.logger.info(f"Found {len(pdf_results)} PDF results")
+            
+            # Print all results before filtering
+            if pdf_results:
+                self.logger.info("="*80)
+                self.logger.info("PDF SEARCH RESULTS (before threshold filtering):")
+                self.logger.info("="*80)
+                for i, result in enumerate(pdf_results, 1):
+                    self.logger.info(f"\nResult {i}:")
+                    self.logger.info(f"  PDF: {result.pdf_filename}")
+                    self.logger.info(f"  Score: {result.score:.4f}")
+                    self.logger.info(f"  Page: {result.page_number}, Paragraph: {result.paragraph_index}")
+                    self.logger.info(f"  Title: {result.title or 'No title'}")
+                    self.logger.info(f"  Snippet: {result.source_snippet[:200]}...")
+                self.logger.info("="*80)
             
             # Filter by threshold
             filtered_results = self.filter_by_threshold(pdf_results, self.relevance_threshold)
-            self.logger.debug(
-                f"After threshold filtering: {len(filtered_results)} PDF results"
+            self.logger.info(
+                f"After threshold filtering ({self.relevance_threshold}): {len(filtered_results)} PDF results"
             )
             
             return filtered_results
@@ -227,45 +256,35 @@ class RetrievalEngine:
         k: int
     ) -> List[Dict[str, Any]]:
         """
-        Perform k-NN search in OpenSearch with source type filter.
+        Perform k-NN search in OpenSearch using separate indices.
         
         Args:
             query_embedding: Query vector embedding
-            source_type: Source type to filter ("video" or "pdf")
+            source_type: Source type to search ("video" or "pdf")
             k: Number of nearest neighbors to retrieve
             
         Returns:
             List of raw hit dictionaries from OpenSearch response
         """
+        # Determine which index to search
+        index_name = self.video_index_name if source_type == "video" else self.pdf_index_name
+        
         self.logger.debug(
-            f"Executing k-NN search: source_type={source_type}, k={k}"
+            f"Executing k-NN search: index={index_name}, k={k}"
         )
         
         # Convert numpy array to list for JSON serialization
         query_vector = query_embedding.tolist()
         
-        # Build k-NN query with source type filter
+        # Build k-NN query (no filter needed since we have separate indices)
         query_body = {
             "size": k,
             "query": {
-                "bool": {
-                    "must": [
-                        {
-                            "knn": {
-                                "embedding": {
-                                    "vector": query_vector,
-                                    "k": k
-                                }
-                            }
-                        }
-                    ],
-                    "filter": [
-                        {
-                            "term": {
-                                "source_type": source_type
-                            }
-                        }
-                    ]
+                "knn": {
+                    "embedding": {
+                        "vector": query_vector,
+                        "k": k
+                    }
                 }
             }
         }
@@ -273,7 +292,7 @@ class RetrievalEngine:
         try:
             # Execute search
             response = self.opensearch_client.search(
-                index=self.index_name,
+                index=index_name,
                 body=query_body
             )
             
@@ -281,14 +300,14 @@ class RetrievalEngine:
             hits = response.get("hits", {}).get("hits", [])
             
             self.logger.debug(
-                f"k-NN search returned {len(hits)} results for source_type={source_type}"
+                f"k-NN search returned {len(hits)} results from {index_name}"
             )
             
             return hits
             
         except Exception as e:
             self.logger.error(
-                f"k-NN search failed for source_type={source_type}: {str(e)}"
+                f"k-NN search failed for index {index_name}: {str(e)}"
             )
             raise
     
@@ -309,14 +328,17 @@ class RetrievalEngine:
         Args:
             query_embedding: Query vector embedding
             query_text: Original query text for BM25 search
-            source_type: Source type to filter ("video" or "pdf")
+            source_type: Source type to search ("video" or "pdf")
             k: Number of results to retrieve
             
         Returns:
             List of raw hit dictionaries from OpenSearch response
         """
+        # Determine which index to search
+        index_name = self.video_index_name if source_type == "video" else self.pdf_index_name
+        
         self.logger.debug(
-            f"Executing hybrid search: source_type={source_type}, k={k}"
+            f"Executing hybrid search: index={index_name}, k={k}"
         )
         
         # Convert numpy array to list for JSON serialization
@@ -352,13 +374,6 @@ class RetrievalEngine:
                             }
                         }
                     ],
-                    "filter": [
-                        {
-                            "term": {
-                                "source_type": source_type
-                            }
-                        }
-                    ],
                     "minimum_should_match": 1
                 }
             }
@@ -367,7 +382,7 @@ class RetrievalEngine:
         try:
             # Execute search
             response = self.opensearch_client.search(
-                index=self.index_name,
+                index=index_name,
                 body=query_body
             )
             
@@ -375,14 +390,14 @@ class RetrievalEngine:
             hits = response.get("hits", {}).get("hits", [])
             
             self.logger.debug(
-                f"Hybrid search returned {len(hits)} results for source_type={source_type}"
+                f"Hybrid search returned {len(hits)} results from {index_name}"
             )
             
             return hits
             
         except Exception as e:
             self.logger.error(
-                f"Hybrid search failed for source_type={source_type}: {str(e)}"
+                f"Hybrid search failed for index {index_name}: {str(e)}"
             )
             raise
     

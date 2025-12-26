@@ -5,9 +5,18 @@ preprocessing, and embedding generation using OpenAI.
 """
 
 import logging
+import string
 import numpy as np
+import nltk
+from nltk.corpus import stopwords
 
 from ..processing.embedding import EmbeddingEngine
+
+# Download stopwords on first import (will be cached)
+try:
+    nltk.data.find('corpora/stopwords')
+except LookupError:
+    nltk.download('stopwords', quiet=True)
 
 
 class QueryProcessor:
@@ -27,13 +36,16 @@ class QueryProcessor:
         """
         self.embedding_engine = embedding_engine
         self.logger = logger
+        
+        # Load English stop words
+        self.stop_words = set(stopwords.words('english'))
     
     def process_query(self, query: str) -> np.ndarray:
         """Process and embed a user query.
         
-        This method validates the query, preprocesses the text, and generates
-        a vector embedding using OpenAI's embedding API. The same embedding
-        model is used as for content chunks to ensure compatibility.
+        This method validates the query and generates a vector embedding.
+        For semantic search with embeddings, we preserve the full query
+        to maintain semantic meaning.
         
         Args:
             query: User's question as a string
@@ -52,13 +64,10 @@ class QueryProcessor:
         
         self.logger.info(f"Processing query: {query[:100]}...")
         
-        # Preprocess the query text
-        preprocessed_query = self.preprocess_text(query)
-        self.logger.debug(f"Preprocessed query: {preprocessed_query[:100]}...")
-        
-        # Generate embedding using the embedding engine
+        # Generate embedding directly from the query
+        # No preprocessing needed for semantic search
         try:
-            query_embedding = self.embedding_engine.embed_text(preprocessed_query)
+            query_embedding = self.embedding_engine.embed_text(query)
             self.logger.info(
                 f"Successfully generated query embedding of dimension {len(query_embedding)}"
             )
@@ -71,22 +80,41 @@ class QueryProcessor:
     def preprocess_text(self, text: str) -> str:
         """Normalize and clean query text.
         
-        This method performs minimal preprocessing to preserve user intent
-        while ensuring consistent formatting. It strips leading/trailing
-        whitespace and normalizes internal whitespace.
+        This method:
+        1. Removes punctuation (?, !, ., etc.)
+        2. Removes stop words (what, is, the, etc.)
+        3. Normalizes whitespace
+        
+        Example: "What is OpenStax?" -> "OpenStax"
         
         Args:
             text: Raw query text
             
         Returns:
-            Preprocessed query text
+            Preprocessed query text with stop words and punctuation removed
         """
+        original_text = text
+        
         # Strip leading/trailing whitespace
         text = text.strip()
         
-        # Normalize internal whitespace (replace multiple spaces with single space)
+        # Remove punctuation
+        text = text.translate(str.maketrans('', '', string.punctuation))
+        self.logger.info(f"After removing punctuation: '{text}'")
+        
+        # Tokenize and remove stop words
+        words = text.split()
+        self.logger.info(f"Words before filtering: {words}")
+        
+        filtered_words = [word for word in words if word.lower() not in self.stop_words]
+        self.logger.info(f"Words after filtering stop words: {filtered_words}")
+        
+        # Join back together
+        text = ' '.join(filtered_words)
+        
+        # Normalize internal whitespace (in case of multiple spaces)
         text = ' '.join(text.split())
         
-        self.logger.debug(f"Preprocessed text: '{text[:100]}...'")
+        self.logger.info(f"Final preprocessed: '{original_text}' -> '{text}'")
         
         return text

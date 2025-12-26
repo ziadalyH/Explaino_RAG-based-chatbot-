@@ -22,7 +22,9 @@ class Config:
     opensearch_password: Optional[str]
     opensearch_use_ssl: bool
     opensearch_verify_certs: bool
-    opensearch_index_name: str
+    opensearch_index_name: str  # Legacy - kept for backward compatibility
+    opensearch_pdf_index: str   # Separate index for PDFs
+    opensearch_video_index: str # Separate index for videos
     
     # OpenAI configuration
     openai_api_key: str
@@ -72,6 +74,8 @@ class Config:
             opensearch_use_ssl=os.getenv("OPENSEARCH_USE_SSL", str(config_data.get("opensearch", {}).get("use_ssl", False))).lower() == "true",
             opensearch_verify_certs=os.getenv("OPENSEARCH_VERIFY_CERTS", str(config_data.get("opensearch", {}).get("verify_certs", True))).lower() == "true",
             opensearch_index_name=os.getenv("OPENSEARCH_INDEX_NAME", config_data.get("opensearch", {}).get("index_name", "rag-index")),
+            opensearch_pdf_index=os.getenv("OPENSEARCH_PDF_INDEX", config_data.get("opensearch", {}).get("pdf_index", "rag-pdf-index")),
+            opensearch_video_index=os.getenv("OPENSEARCH_VIDEO_INDEX", config_data.get("opensearch", {}).get("video_index", "rag-video-index")),
             
             # OpenAI configuration
             openai_api_key=os.getenv("OPENAI_API_KEY", config_data.get("openai", {}).get("api_key", "")),

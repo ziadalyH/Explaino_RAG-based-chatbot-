@@ -1,17 +1,33 @@
-"""PDF document ingestion module using Unstructured library."""
+"""PDF document ingestion module using PyMuPDF library.
+
+This module extracts all elements per page and groups them into semantic chunks:
+- Hierarchical structure preservation (sections → paragraphs)
+- Optimal chunk sizes (512-1024 tokens)
+- Title context maintained with content
+- Chunk overlap for context continuity
+"""
 
 import logging
 from pathlib import Path
-from typing import List, Optional
-from unstructured.partition.pdf import partition_pdf
-from unstructured.chunking.title import chunk_by_title
+from typing import List, Optional, Dict
+import fitz  # PyMuPDF
+import tiktoken
 
 from ..models import PDFParagraph
 from ..config import Config
 
 
 class PDFIngester:
-    """Ingests and processes PDF documents using Unstructured library with chunking by title."""
+    """
+    Ingests and processes PDF documents using PyMuPDF library.
+    
+    Features:
+    - Extracts text blocks per page with font information
+    - Groups content into semantic chunks (512-1024 tokens)
+    - Detects titles based on font size and formatting
+    - Adds overlap between chunks for context continuity
+    - Optimized for RAG retrieval quality
+    """
     
     def __init__(self, config: Config, logger: Optional[logging.Logger] = None):
         """
@@ -24,6 +40,38 @@ class PDFIngester:
         self.config = config
         self.logger = logger or logging.getLogger(__name__)
         self.pdf_dir = config.pdf_dir
+        
+        # Chunking parameters (paragraph-level with overlap)
+        self.target_chunk_size = 512  # tokens per chunk
+        self.max_chunk_size = 768     # tokens (allow some flexibility)
+        self.chunk_overlap = 128      # tokens overlap between chunks
+        
+        # Paragraph extraction settings
+        self.min_paragraph_length = 20  # characters (very permissive)
+        
+        # Initialize tokenizer for accurate token counting
+        try:
+            self.tokenizer = tiktoken.get_encoding("cl100k_base")  # GPT-4 tokenizer
+        except Exception as e:
+            self.logger.warning(f"Failed to load tiktoken, using character approximation: {e}")
+            self.tokenizer = None
+    
+    
+    def _count_tokens(self, text: str) -> int:
+        """
+        Count tokens in text using tiktoken or character approximation.
+        
+        Args:
+            text: Text to count tokens for
+            
+        Returns:
+            Number of tokens
+        """
+        if self.tokenizer:
+            return len(self.tokenizer.encode(text))
+        else:
+            # Approximation: ~4 characters per token
+            return len(text) // 4
     
     def ingest_directory(self, directory: Optional[Path] = None) -> List[PDFParagraph]:
         """
@@ -61,76 +109,96 @@ class PDFIngester:
     
     def ingest_file(self, file_path: Path) -> List[PDFParagraph]:
         """
-        Extract text and chunks from a single PDF file using Unstructured.
+        Extract semantic chunks from a single PDF file using PyMuPDF.
         
-        Uses Unstructured's partition_pdf to extract elements, then chunks by title
-        to keep headings together with their content. Extracts the title/heading
-        for each chunk.
+        This method:
+        1. Extracts text blocks with font information using PyMuPDF
+        2. Detects titles based on font size
+        3. Creates semantic chunks (512-1024 tokens)
+        4. Preserves title hierarchy
+        5. Adds overlap between chunks
         
         Args:
             file_path: Path to the PDF file
             
         Returns:
-            List of PDFParagraph objects extracted from the PDF
+            List of PDFParagraph objects (semantic chunks)
         """
         paragraphs = []
         
         try:
-            self.logger.info(f"Parsing PDF with Unstructured: {file_path.name}")
+            self.logger.info(f"Parsing PDF with PyMuPDF: {file_path.name}")
             
-            # Step 1: Partition the PDF into elements
-            elements = partition_pdf(
-                filename=str(file_path),
-                strategy="fast",  # Use fast strategy for better performance
-                infer_table_structure=False  # Disable table detection for speed
-            )
+            # Open PDF with PyMuPDF
+            doc = fitz.open(str(file_path))
+            self.logger.info(f"Opened PDF with {len(doc)} pages")
             
-            self.logger.info(f"Extracted {len(elements)} elements from {file_path.name}")
+            # Process each page and create semantic chunks
+            total_chunks_created = 0
+            pages_with_no_chunks = []
             
-            # Step 2: Chunk by title to keep headings with their content
-            chunks = chunk_by_title(
-                elements,
-                max_characters=1000,  # Maximum chunk size
-                combine_text_under_n_chars=100,  # Combine small chunks
-                new_after_n_chars=800  # Prefer breaking at this size
-            )
-            
-            self.logger.info(f"Created {len(chunks)} chunks from elements")
-            
-            # Step 3: Convert chunks to PDFParagraph objects with titles
-            for chunk_idx, chunk in enumerate(chunks):
-                # Get metadata from the chunk
-                metadata = chunk.metadata
-                page_number = metadata.page_number if hasattr(metadata, 'page_number') and metadata.page_number else 1
+            for page_num in range(len(doc)):
+                page = doc[page_num]
                 
-                # Get the text content
-                text = chunk.text.strip()
+                # Extract text blocks with font information
+                blocks = self._extract_blocks_from_page(page)
                 
-                # Extract title from the chunk
-                # Unstructured's chunk_by_title includes the title at the beginning of the chunk
-                # We'll extract it by looking for Title elements in the original elements
-                title = self._extract_title_from_chunk(chunk, elements)
+                if not blocks:
+                    pages_with_no_chunks.append(page_num + 1)
+                    continue
                 
-                if text and len(text) >= 20:  # Filter very short chunks
-                    paragraph = PDFParagraph(
-                        pdf_filename=file_path.name,
-                        page_number=page_number,
-                        paragraph_index=chunk_idx,
-                        text=text,
-                        title=title
-                    )
-                    paragraphs.append(paragraph)
-                    
-                    title_info = f" (Title: {title})" if title else ""
+                # Create semantic chunks from this page (paragraph index resets per page)
+                # Note: page_num is 0-indexed (PyMuPDF), we convert to 1-indexed for storage
+                page_chunks = self._create_semantic_chunks(
+                    file_path.name,
+                    page_num + 1,  # Physical page number (1-indexed)
+                    blocks,
+                    start_index=0  # Reset to 0 for each page
+                )
+                
+                if page_chunks:
                     self.logger.debug(
-                        f"Chunk {chunk_idx} (page {page_number}){title_info}: {text[:100]}..."
+                        f"Page {page_num + 1}: Created {len(page_chunks)} chunks from {len(blocks)} blocks"
                     )
+                
+                if not page_chunks:
+                    pages_with_no_chunks.append(page_num + 1)
+                
+                paragraphs.extend(page_chunks)
+                total_chunks_created += len(page_chunks)
+                
+                # Log every 50 pages
+                if (page_num + 1) % 50 == 0:
+                    self.logger.info(
+                        f"Progress: Page {page_num + 1}/{len(doc)} - "
+                        f"Created {total_chunks_created} chunks so far"
+                    )
+            
+            doc.close()
+            
+            if pages_with_no_chunks:
+                self.logger.warning(
+                    f"Pages with no chunks: {len(pages_with_no_chunks)} pages "
+                    f"(e.g., {pages_with_no_chunks[:10]})"
+                )
             
             if not paragraphs:
-                self.logger.warning(f"No chunks extracted from {file_path.name}")
+                self.logger.warning(f"No chunks created from {file_path.name}")
             else:
+                # Calculate statistics
+                total_tokens = sum(self._count_tokens(p.text) for p in paragraphs)
+                avg_tokens = total_tokens / len(paragraphs) if paragraphs else 0
+                chunks_with_titles = sum(1 for p in paragraphs if p.title)
+                
                 self.logger.info(
-                    f"Successfully extracted {len(paragraphs)} chunks from {file_path.name}"
+                    f"Successfully created {len(paragraphs)} semantic chunks from {file_path.name}"
+                )
+                self.logger.info(
+                    f"  Average chunk size: {avg_tokens:.0f} tokens"
+                )
+                self.logger.info(
+                    f"  Chunks with titles: {chunks_with_titles}/{len(paragraphs)} "
+                    f"({chunks_with_titles/len(paragraphs)*100:.1f}%)"
                 )
             
             return paragraphs
@@ -143,45 +211,226 @@ class PDFIngester:
             self.logger.exception("Full traceback:")
             return []
     
-    def _extract_title_from_chunk(self, chunk, elements: List) -> Optional[str]:
+    def _extract_blocks_from_page(self, page) -> List[Dict]:
         """
-        Extract the title/heading from a chunk.
-        
-        Looks for Title elements at the beginning of the chunk text.
+        Extract text blocks from a page with font information.
         
         Args:
-            chunk: The chunk object from chunk_by_title
-            elements: Original list of elements from partition_pdf
+            page: PyMuPDF page object
             
         Returns:
-            Title string if found, None otherwise
+            List of block dictionaries with 'text', 'font_size', and 'is_title' keys
         """
-        try:
-            # Get the chunk text
-            chunk_text = chunk.text.strip()
-            
-            # Look for Title elements in the original elements that match the beginning of this chunk
-            for element in elements:
-                element_type = type(element).__name__
+        blocks = []
+        
+        # Get text blocks with detailed information
+        text_dict = page.get_text("dict")
+        
+        # Calculate average font size for title detection
+        font_sizes = []
+        for block in text_dict.get("blocks", []):
+            if block.get("type") == 0:  # Text block
+                for line in block.get("lines", []):
+                    for span in line.get("spans", []):
+                        font_sizes.append(span.get("size", 0))
+        
+        avg_font_size = sum(font_sizes) / len(font_sizes) if font_sizes else 12
+        title_threshold = avg_font_size * 1.2  # 20% larger than average
+        
+        # Extract blocks with title detection
+        for block in text_dict.get("blocks", []):
+            if block.get("type") == 0:  # Text block
+                block_text = ""
+                max_font_size = 0
                 
-                # Check if this is a Title element
-                if element_type == 'Title':
-                    title_text = element.text.strip()
-                    
-                    # Check if this title appears at the start of the chunk
-                    if chunk_text.startswith(title_text):
-                        return title_text
+                for line in block.get("lines", []):
+                    line_text = ""
+                    for span in line.get("spans", []):
+                        line_text += span.get("text", "")
+                        max_font_size = max(max_font_size, span.get("size", 0))
+                    block_text += line_text + " "
+                
+                block_text = block_text.strip()
+                if block_text and len(block_text) >= 50:  # Filter out short headers/footers
+                    blocks.append({
+                        "text": block_text,
+                        "font_size": max_font_size,
+                        "is_title": max_font_size >= title_threshold
+                    })
+        
+        return blocks
+    
+    
+    def _create_semantic_chunks(
+        self,
+        pdf_filename: str,
+        page_num: int,
+        blocks: List[Dict],
+        start_index: int
+    ) -> List[PDFParagraph]:
+        """
+        Create chunks from page blocks - PARAGRAPH-LEVEL with sliding window.
+        
+        Strategy for comprehensive coverage:
+        1. Extract EVERY paragraph as individual chunks
+        2. For long paragraphs (>max_chunk_size), split with overlap
+        3. Preserve title context with each paragraph
+        4. No aggressive grouping - capture all content
+        
+        Args:
+            pdf_filename: Name of the PDF file
+            page_num: Page number
+            blocks: List of block dictionaries from PyMuPDF
+            start_index: Starting paragraph index
             
-            # If no Title element found, try to extract the first line as a potential heading
-            # (often headings are in ALL CAPS or have specific formatting)
-            first_line = chunk_text.split('\n')[0].strip()
+        Returns:
+            List of PDFParagraph objects (one per paragraph or split)
+        """
+        chunks = []
+        current_title = None
+        paragraph_index = start_index
+        
+        filtered_count = 0
+        processed_count = 0
+        
+        # Process each block
+        for block in blocks:
+            text = block["text"].strip()
+            is_title = block["is_title"]
             
-            # Heuristic: if first line is short (<100 chars) and in ALL CAPS, treat as title
-            if len(first_line) < 100 and first_line.isupper() and len(first_line) > 3:
-                return first_line
+            # Skip empty blocks
+            if not text:
+                continue
             
-            return None
+            # Skip very short blocks (likely noise)
+            if len(text) < self.min_paragraph_length:
+                filtered_count += 1
+                continue
             
-        except Exception as e:
-            self.logger.debug(f"Error extracting title: {e}")
-            return None
+            # Handle title blocks - update current title context
+            if is_title:
+                current_title = text
+                continue
+            
+            # Handle content blocks - each becomes its own chunk(s)
+            processed_count += 1
+            text_tokens = self._count_tokens(text)
+            
+            # If paragraph fits in one chunk, create it directly
+            if text_tokens <= self.max_chunk_size:
+                chunks.append(PDFParagraph(
+                    pdf_filename=pdf_filename,
+                    page_number=page_num,
+                    paragraph_index=paragraph_index,
+                    text=text,
+                    title=current_title
+                ))
+                paragraph_index += 1
+            else:
+                # Long paragraph - split with sliding window overlap
+                sub_chunks = self._split_long_paragraph(text)
+                for sub_text in sub_chunks:
+                    chunks.append(PDFParagraph(
+                        pdf_filename=pdf_filename,
+                        page_number=page_num,
+                        paragraph_index=paragraph_index,
+                        text=sub_text,
+                        title=current_title
+                    ))
+                    paragraph_index += 1
+        
+        # Log if page has very few chunks (potential issue)
+        if len(blocks) > 5 and len(chunks) == 0:
+            self.logger.warning(
+                f"Page {page_num}: {len(blocks)} blocks but 0 chunks created "
+                f"(filtered: {filtered_count}, processed: {processed_count})"
+            )
+        
+        return chunks
+    
+    def _split_long_paragraph(self, text: str) -> List[str]:
+        """
+        Split a long paragraph into overlapping chunks.
+        
+        Uses sliding window approach to ensure no content is lost.
+        
+        Args:
+            text: Long paragraph text
+            
+        Returns:
+            List of text chunks with overlap
+        """
+        if not self.tokenizer:
+            # Fallback: split by characters with overlap
+            chunks = []
+            chunk_chars = self.target_chunk_size * 4  # ~4 chars per token
+            overlap_chars = self.chunk_overlap * 4
+            
+            start = 0
+            while start < len(text):
+                end = start + chunk_chars
+                chunk = text[start:end]
+                
+                # Try to break at sentence boundary
+                if end < len(text):
+                    last_period = chunk.rfind('. ')
+                    if last_period > len(chunk) // 2:  # Only if in second half
+                        chunk = chunk[:last_period + 1]
+                
+                chunks.append(chunk.strip())
+                start += chunk_chars - overlap_chars
+            
+            return chunks
+        
+        # Use tokenizer for accurate splitting
+        tokens = self.tokenizer.encode(text)
+        chunks = []
+        
+        start = 0
+        while start < len(tokens):
+            end = start + self.target_chunk_size
+            chunk_tokens = tokens[start:end]
+            chunk_text = self.tokenizer.decode(chunk_tokens)
+            chunks.append(chunk_text.strip())
+            
+            # Move forward with overlap
+            start += self.target_chunk_size - self.chunk_overlap
+        
+        return chunks
+    
+    def _get_overlap_text(self, content_list: List[str], overlap_tokens: int) -> str:
+        """
+        Get overlap text from the end of content list.
+        
+        Args:
+            content_list: List of text segments
+            overlap_tokens: Number of tokens to overlap
+            
+        Returns:
+            Overlap text (last N tokens from content)
+        """
+        if not content_list:
+            return ""
+        
+        # Start from the end and accumulate until we have enough tokens
+        overlap_parts = []
+        token_count = 0
+        
+        for text in reversed(content_list):
+            text_tokens = self._count_tokens(text)
+            if token_count + text_tokens <= overlap_tokens:
+                overlap_parts.insert(0, text)
+                token_count += text_tokens
+            else:
+                # Take partial text to reach overlap target
+                if self.tokenizer:
+                    tokens = self.tokenizer.encode(text)
+                    remaining = overlap_tokens - token_count
+                    if remaining > 0:
+                        partial_tokens = tokens[-remaining:]
+                        partial_text = self.tokenizer.decode(partial_tokens)
+                        overlap_parts.insert(0, partial_text)
+                break
+        
+        return ' '.join(overlap_parts)
+

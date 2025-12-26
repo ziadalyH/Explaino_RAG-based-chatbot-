@@ -201,36 +201,56 @@ class CLI:
         lines.append("=" * 80)
         
         if isinstance(response, VideoResponse):
-            lines.append("📹 VIDEO ANSWER")
-            lines.append("=" * 80)
-            lines.append(f"\nAnswer: {response.generated_answer}\n")
-            lines.append("-" * 80)
-            lines.append("Source Information:")
-            lines.append(f"  Video ID: {response.video_id}")
-            lines.append(f"  Timestamp: {response.start_timestamp:.2f}s - {response.end_timestamp:.2f}s")
-            lines.append(f"  Token Range: {response.start_token_id} - {response.end_token_id}")
-            lines.append(f"  Relevance Score: {response.score:.4f}")
-            lines.append(f"  Document ID: {response.document_id}")
+            # Check if LLM couldn't answer
+            is_no_answer = "cannot answer" in response.generated_answer.lower()
             
-            if verbose:
-                lines.append(f"\nTranscript Snippet:")
-                lines.append(f"  {response.transcript_snippet}")
+            if is_no_answer:
+                lines.append("❌ NO RELEVANT ANSWER FOUND")
+                lines.append("=" * 80)
+                lines.append(f"\n{response.generated_answer}\n")
+                lines.append("Suggestion: The retrieved content wasn't relevant enough.")
+                lines.append("            Try rephrasing your question.")
+            else:
+                lines.append("📹 VIDEO ANSWER")
+                lines.append("=" * 80)
+                lines.append(f"\nAnswer: {response.generated_answer}\n")
+                lines.append("-" * 80)
+                lines.append("Source Information:")
+                lines.append(f"  Video ID: {response.video_id}")
+                lines.append(f"  Timestamp: {response.start_timestamp:.2f}s - {response.end_timestamp:.2f}s")
+                lines.append(f"  Token Range: {response.start_token_id} - {response.end_token_id}")
+                lines.append(f"  Relevance Score: {response.score:.4f}")
+                lines.append(f"  Document ID: {response.document_id}")
+                
+                if verbose:
+                    lines.append(f"\nTranscript Snippet:")
+                    lines.append(f"  {response.transcript_snippet}")
             
         elif isinstance(response, PDFResponse):
-            lines.append("📄 PDF ANSWER")
-            lines.append("=" * 80)
-            lines.append(f"\nAnswer: {response.generated_answer}\n")
-            lines.append("-" * 80)
-            lines.append("Source Information:")
-            lines.append(f"  PDF File: {response.pdf_filename}")
-            lines.append(f"  Page: {response.page_number}")
-            lines.append(f"  Paragraph: {response.paragraph_index}")
-            lines.append(f"  Relevance Score: {response.score:.4f}")
-            lines.append(f"  Document ID: {response.document_id}")
+            # Check if LLM couldn't answer
+            is_no_answer = "cannot answer" in response.generated_answer.lower()
             
-            if verbose:
-                lines.append(f"\nSource Snippet:")
-                lines.append(f"  {response.source_snippet}")
+            if is_no_answer:
+                lines.append("❌ NO RELEVANT ANSWER FOUND")
+                lines.append("=" * 80)
+                lines.append(f"\n{response.generated_answer}\n")
+                lines.append("Suggestion: The retrieved content wasn't relevant enough.")
+                lines.append("            Try rephrasing your question.")
+            else:
+                lines.append("📄 PDF ANSWER")
+                lines.append("=" * 80)
+                lines.append(f"\nAnswer: {response.generated_answer}\n")
+                lines.append("-" * 80)
+                lines.append("Source Information:")
+                lines.append(f"  PDF File: {response.pdf_filename}")
+                lines.append(f"  Page: {response.page_number}")
+                lines.append(f"  Paragraph: {response.paragraph_index}")
+                lines.append(f"  Relevance Score: {response.score:.4f}")
+                lines.append(f"  Document ID: {response.document_id}")
+                
+                if verbose:
+                    lines.append(f"\nSource Snippet:")
+                    lines.append(f"  {response.source_snippet}")
             
         elif isinstance(response, NoAnswerResponse):
             lines.append("❌ NO ANSWER FOUND")

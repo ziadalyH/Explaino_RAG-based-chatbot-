@@ -152,10 +152,11 @@ class ResponseGenerator:
         self,
         query: str,
         results: List[VideoResult]
-    ) -> VideoResponse:
+    ) -> Union[VideoResponse, NoAnswerResponse]:
         """
         Generate VideoResponse from multiple VideoResults.
         Let LLM choose the best context and generate answer.
+        Returns NoAnswerResponse if LLM refuses to answer.
         """
         # Combine contexts with metadata
         combined_context = self._combine_contexts_for_llm(
@@ -170,6 +171,13 @@ class ResponseGenerator:
             contexts=combined_context,
             num_results=len(results)
         )
+        
+        # Check if LLM refused to answer
+        if generated_answer is None:
+            self.logger.info("LLM refused to answer, returning NoAnswerResponse")
+            return NoAnswerResponse(
+                message="I couldn't find relevant information to answer your question. Please try rephrasing or asking a different question."
+            )
         
         # Return response with the best result's metadata
         best_result = results[best_idx]
@@ -191,11 +199,26 @@ class ResponseGenerator:
         self,
         query: str,
         results: List[PDFResult]
-    ) -> PDFResponse:
+    ) -> Union[PDFResponse, NoAnswerResponse]:
         """
         Generate PDFResponse from multiple PDFResults.
         Let LLM choose the best context and generate answer.
+        Returns NoAnswerResponse if LLM refuses to answer.
         """
+        # Log the results being processed
+        self.logger.info("="*80)
+        self.logger.info(f"GENERATING ANSWER FROM {len(results)} PDF RESULTS:")
+        self.logger.info("="*80)
+        for i, result in enumerate(results, 1):
+            self.logger.info(f"\nResult {i}:")
+            self.logger.info(f"  PDF: {result.pdf_filename}")
+            self.logger.info(f"  Page: {result.page_number}, Paragraph: {result.paragraph_index}")
+            self.logger.info(f"  Title: {result.title or 'No title'}")
+            self.logger.info(f"  Score: {result.score:.4f}")
+            self.logger.info(f"  Snippet length: {len(result.source_snippet)} chars")
+            self.logger.info(f"  Snippet preview: {result.source_snippet[:300]}...")
+        self.logger.info("="*80)
+        
         # Combine contexts with metadata
         combined_context = self._combine_contexts_for_llm(
             query=query,
@@ -203,12 +226,25 @@ class ResponseGenerator:
             result_type="pdf"
         )
         
+        self.logger.info(f"Combined context length: {len(combined_context)} chars")
+        self.logger.info(f"Combined context preview:\n{combined_context[:500]}...")
+        
         # Generate answer with LLM (it will pick the best context)
         generated_answer, best_idx = self.generate_answer_with_llm_selection(
             query=query,
             contexts=combined_context,
             num_results=len(results)
         )
+        
+        # Check if LLM refused to answer
+        if generated_answer is None:
+            self.logger.info("LLM refused to answer, returning NoAnswerResponse")
+            return NoAnswerResponse(
+                message="I couldn't find relevant information to answer your question. Please try rephrasing or asking a different question."
+            )
+        
+        self.logger.info(f"LLM selected result {best_idx + 1}")
+        self.logger.info(f"Generated answer: {generated_answer}")
         
         # Return response with the best result's metadata
         best_result = results[best_idx]
@@ -315,6 +351,24 @@ Answer:"""
                         answer = re.sub(r'\[Using Context \d+\]\s*', '', answer).strip()
                 except:
                     pass
+            
+            # Check if LLM refused to answer
+            refusal_phrases = [
+                "i cannot answer",
+                "i can't answer",
+                "cannot answer this question",
+                "can't answer this question",
+                "not enough information",
+                "insufficient information",
+                "no information",
+                "don't have enough",
+                "doesn't contain"
+            ]
+            
+            answer_lower = answer.lower()
+            if any(phrase in answer_lower for phrase in refusal_phrases):
+                self.logger.info("LLM refused to answer - returning None to trigger NoAnswerResponse")
+                return None, best_idx
             
             self.logger.debug(f"LLM selected context {best_idx + 1}: {answer[:100]}...")
             self.logger.info("LLM answer generated successfully")
